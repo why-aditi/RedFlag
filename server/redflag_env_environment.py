@@ -15,26 +15,48 @@ from uuid import uuid4
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
-from models import (
-    RedflagAction,
-    RedflagObservation,
-    RedflagState,
-    ReviewComment,
-    DiffHunk,
-)
-from env import EpisodeState
-from tasks.registry import (
-    list_task_ids,
-    load_task,
-    load_diff_hunks,
-    load_context_files,
-)
-from reward import (
-    get_grader,
-    compute_comment_reward,
-    compute_context_request_reward,
-    compute_early_termination_bonus,
-)
+try:
+    from ..models import (
+        RedflagAction,
+        RedflagObservation,
+        RedflagState,
+        ReviewComment,
+        DiffHunk,
+    )
+    from ..env import EpisodeState
+    from ..tasks.registry import (
+        list_task_ids,
+        load_task,
+        load_diff_hunks,
+        load_context_files,
+    )
+    from ..reward import (
+        get_grader,
+        compute_comment_reward,
+        compute_context_request_reward,
+        compute_early_termination_bonus,
+    )
+except (ImportError, ValueError):
+    from models import (
+        RedflagAction,
+        RedflagObservation,
+        RedflagState,
+        ReviewComment,
+        DiffHunk,
+    )
+    from env import EpisodeState
+    from tasks.registry import (
+        list_task_ids,
+        load_task,
+        load_diff_hunks,
+        load_context_files,
+    )
+    from reward import (
+        get_grader,
+        compute_comment_reward,
+        compute_context_request_reward,
+        compute_early_termination_bonus,
+    )
 
 
 class RedflagEnvironment(Environment):
@@ -54,8 +76,9 @@ class RedflagEnvironment(Environment):
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
-    def __init__(self):
+    def __init__(self, *args: Any, **kwargs: Any):
         """Initialize the RedFlag environment."""
+        super().__init__(*args, **kwargs)
         self._episode: Optional[EpisodeState] = None
         self._grader = None
         self._task_ids = list_task_ids()
@@ -94,7 +117,7 @@ class RedflagEnvironment(Environment):
 
         return self._build_observation(reward=0.0)
 
-    def step(self, action: RedflagAction) -> Tuple[RedflagObservation, float, bool, Dict[str, Any]]:  # type: ignore[override]
+    def step(self, action: RedflagAction) -> RedflagObservation:  # type: ignore[override]
         """
         Execute a step in the environment.
 
@@ -102,7 +125,7 @@ class RedflagEnvironment(Environment):
             action: RedflagAction with action_type and optional comment/context_request.
 
         Returns:
-            Tuple of (observation, reward, done, info).
+            RedflagObservation including reward/done/metadata.
         """
         if self._episode is None:
             obs = RedflagObservation(
@@ -111,14 +134,14 @@ class RedflagEnvironment(Environment):
                 metadata={"error": "Environment not reset. Call reset() first."},
                 last_action_error="Environment not reset. Call reset() first.",
             )
-            return obs, 0.0, True, obs.metadata
+            return obs
 
         if self._episode.done:
             obs = self._build_observation(
                 reward=0.0,
                 error="Episode already finished.",
             )
-            return obs, 0.0, True, obs.metadata
+            return obs
 
         # Increment step
         self._episode.step += 1
@@ -159,8 +182,8 @@ class RedflagEnvironment(Environment):
             "success": self._episode.success if self._episode.done else None,
         }
         obs.metadata = info_dict
-        
-        return obs, reward, obs.done, info_dict
+
+        return obs
 
     @property
     def state(self) -> State:
