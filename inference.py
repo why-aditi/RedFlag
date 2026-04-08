@@ -434,19 +434,9 @@ def _load_redflag_env_and_action() -> tuple[Any, Any]:
 
 # ── Configuration ────────────────────────────────────────────────────────
 
-def load_env() -> None:
-    """Load optional `.env` without overriding already-set variables (harness injects first)."""
-    if not os.path.exists(".env"):
-        return
-    with open(".env", "r", encoding="utf-8") as f:
-        for line in f:
-            if "=" in line and not line.strip().startswith("#"):
-                k, v = line.strip().split("=", 1)
-                k = k.strip()
-                os.environ.setdefault(k, v.strip())
-
-
-load_env()
+IMAGE_NAME = os.getenv("IMAGE_NAME")
+MODEL_NAME = os.getenv("MODEL_NAME") or "zai-org/GLM-5"
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 
 IMAGE_NAME = os.getenv("IMAGE_NAME")
 MODEL_NAME = os.getenv("MODEL_NAME") or "zai-org/GLM-5"
@@ -573,34 +563,22 @@ def log_end(
 # ── LLM Interface ───────────────────────────────────────────────────────
 
 def call_llm_with_fallback(client: Any, messages: list, temperature: float, max_tokens: int) -> str:
-    """Invokes LLM and automatically falls back to secondary models if Pro tier quota is depleted."""
-    models = [
-        MODEL_NAME,
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-        "XiaomiMiMo/MiMo-V2-Flash",
-        "Qwen/Qwen2.5-7B-Instruct"
-    ]
-    for i, m in enumerate(models):
-        try:
-            completion = client.chat.completions.create(
-                model=m,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=False,
-            )
-            return (completion.choices[0].message.content or "").strip()
-        except Exception as exc:
-            err_msg = str(exc).lower()
-            if "402" in err_msg or "429" in err_msg or "depleted" in err_msg:
-                print(f"[DEBUG] Model {m} hit quota. Falling back to alternative...", file=sys.stderr, flush=True)
-                continue
-            # If it's a different error but we have more models, also try to fallback
-            if i < len(models) - 1:
-                print(f"[DEBUG] Model {m} failed: {exc}. Trying next...", file=sys.stderr, flush=True)
-                continue
-            raise exc
-    raise Exception("All fallback models failed due to quota limits or errors.")
+    """Invokes LLM using the provided client."""
+    # We strictly use the MODEL_NAME as fallback models may be restricted by the proxy.
+    model = MODEL_NAME
+    try:
+        completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=False,
+        )
+        return (completion.choices[0].message.content or "").strip()
+    except Exception as exc:
+        err_msg = str(exc).lower()
+        print(f"[ERROR] LLM request failed for model {model}: {exc}", file=sys.stderr, flush=True)
+        raise exc
 
 def build_user_prompt(
     observation: Dict[str, Any], last_reward: float = 0.0, last_error: Optional[str] = None, critic_feedback: Optional[str] = None
@@ -848,36 +826,24 @@ def _harness_llm_credentials_present() -> bool:
 
 def main() -> None:
     """Run inference on all tasks."""
-    # Submission harness: call the LiteLLM proxy using the injected env vars (see checklist).
-    # Use os.environ["API_BASE_URL"] and os.environ["API_KEY"] literally so metering recognizes them.
-    if _harness_llm_credentials_present():
-        if OpenAI is not None:
-            client = OpenAI(
-                base_url=os.environ["API_BASE_URL"].rstrip("/"),
-                api_key=os.environ["API_KEY"],
-            )
-        else:
-            client = _StdlibOpenAI(
-                base_url=os.environ["API_BASE_URL"].rstrip("/"),
-                api_key=os.environ["API_KEY"],
-            )
-        llm_base_log = os.environ["API_BASE_URL"].rstrip("/")
-    else:
-        # Local / HF Router when no injected proxy pair
-        llm_base_log = (
-            os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
-        ).rstrip("/")
-        llm_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
-        if not llm_key:
-            print(
-                "\n[ERROR] Set API_KEY and API_BASE_URL (harness), or HF_TOKEN for local HF Router.\n",
-                file=sys.stderr,
-            )
+    # Strict proxy initialization as required by Meta x Scaler validator.
+    api_base = os.environ.get("API_BASE_URL")
+    api_key = os.environ.get("API_KEY")
+
+    if not api_base or not api_key:
+        # Fallback for local development
+        api_base = api_base or "https://router.huggingface.co/v1"
+        api_key = api_key or os.environ.get("HF_TOKEN")
+        
+        if not api_key:
+            print("\n[ERROR] Missing LLM credentials. Set API_KEY/API_BASE_URL or HF_TOKEN.\n", file=sys.stderr)
             sys.exit(1)
-        if OpenAI is not None:
-            client = OpenAI(base_url=llm_base_log, api_key=llm_key)
-        else:
-            client = _StdlibOpenAI(base_url=llm_base_log, api_key=llm_key)
+
+    llm_base_log = api_base.rstrip("/")
+    if OpenAI is not None:
+        client = OpenAI(base_url=llm_base_log, api_key=api_key)
+    else:
+        client = _StdlibOpenAI(base_url=llm_base_log, api_key=api_key)
 
     base_url = ENV_BASE_URL
 
