@@ -43,14 +43,15 @@ def root():
         "endpoints": ["/reset", "/step", "/state", "/health"]
     }
 
-def main(host: str = "0.0.0.0", port: int = 7860):
+def main():
     """Entry point for standalone execution."""
-    import uvicorn
-    uvicorn.run(app, host=host, port=port)
-
-if __name__ == "__main__":
     import argparse
+    import uvicorn
     parser = argparse.ArgumentParser()
+    parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7860)
     args = parser.parse_args()
-    main(port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port)
+
+if __name__ == "__main__":
+    main()

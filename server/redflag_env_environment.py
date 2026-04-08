@@ -116,7 +116,7 @@ class RedflagEnvironment(Environment):
 
         return self._build_observation(reward=0.0)
 
-    def step(self, action: RedflagAction) -> RedflagObservation:  # type: ignore[override]
+    def step(self, action: RedflagAction) -> Tuple[RedflagObservation, float, bool, Dict[str, Any]]:  # type: ignore[override]
         """
         Execute a step in the environment.
 
@@ -124,21 +124,23 @@ class RedflagEnvironment(Environment):
             action: RedflagAction with action_type and optional comment/context_request.
 
         Returns:
-            RedflagObservation with updated state and reward.
+            Tuple of (observation, reward, done, info).
         """
         if self._episode is None:
-            return RedflagObservation(
+            obs = RedflagObservation(
                 done=True,
                 reward=0.0,
                 metadata={"error": "Environment not reset. Call reset() first."},
                 last_action_error="Environment not reset. Call reset() first.",
             )
+            return obs, 0.0, True, obs.metadata
 
         if self._episode.done:
-            return self._build_observation(
+            obs = self._build_observation(
                 reward=0.0,
                 error="Episode already finished.",
             )
+            return obs, 0.0, True, obs.metadata
 
         # Increment step
         self._episode.step += 1
@@ -170,17 +172,25 @@ class RedflagEnvironment(Environment):
             self._episode.done = True
 
         obs = self._build_observation(reward=reward, error=error)
-        obs.metadata = {
+        
+        # Prepare info dict
+        info_dict = {
             **(obs.metadata or {}),
             "reward_breakdown": info.get("breakdown", {}),
             "final_score": self._episode.final_score if self._episode.done else None,
             "success": self._episode.success if self._episode.done else None,
         }
-        return obs
+        obs.metadata = info_dict
+        
+        return obs, reward, obs.done, info_dict
+
+    def state(self) -> State:
+        """Explicit state() method for OpenEnv interface."""
+        return self._episode_state_property
 
     @property
-    def state(self) -> State:
-        """Get the current environment state."""
+    def _episode_state_property(self) -> State:
+        """Internal property for getting the state."""
         if self._episode is None:
             return RedflagState(episode_id="", step_count=0)
 

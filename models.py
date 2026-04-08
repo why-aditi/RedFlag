@@ -128,13 +128,22 @@ class RedflagObservation(Observation):
 # Reward Breakdown
 # ──────────────────────────────────────────────────────────────────────────────
 
-class RewardBreakdown(BaseModel):
-    """Detailed breakdown of how a reward was computed."""
-    value: float = Field(0.0, description="Total reward for this step")
+class RedflagReward(BaseModel):
+    """
+    Typed reward for the RedFlag environment.
+    """
+    value: float = Field(0.0, description="Total scalar reward for this step")
     breakdown: Dict[str, float] = Field(
         default_factory=dict,
         description='Component scores, e.g. {"issue_found": 0.4, "line_match": 0.2}',
     )
+    is_terminal: bool = Field(False, description="Whether this reward was terminal")
+    success: Optional[bool] = Field(None, description="Whether the episode was successful (if terminal)")
+
+
+class RewardBreakdown(RedflagReward):
+    """Legacy compatibility for RewardBreakdown."""
+    pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────

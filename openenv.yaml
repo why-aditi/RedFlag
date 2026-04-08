@@ -1,6 +1,14 @@
 spec_version: 1
 name: redflag_env
+version: 1.0.0
 type: space
 runtime: fastapi
 app: server.app:app
 port: 7860
+description: "RedFlag — Code Review Reinforcement Learning Environment."
+author: "Aditi Kala"
+tags: ["code-review", "rl", "security", "bugs"]
+license: "MIT"
+metadata:
+  model_compliant: true
+  openenv_interface: "v1"
