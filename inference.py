@@ -5,9 +5,10 @@ RedFlag Inference Script
 MANDATORY root-level inference script for OpenEnv submission.
 
 Environment Variables:
-    API_BASE_URL   The API endpoint for the LLM (default: HF Router)
+    API_BASE_URL   LLM endpoint (OpenAI-compatible). Validators inject LiteLLM proxy URL — use as-is.
+    API_KEY        Key for API_BASE_URL. Validators inject the proxy key — do not substitute HF_TOKEN.
     MODEL_NAME     The model identifier (default: zai-org/GLM-5)
-    HF_TOKEN       Your Hugging Face / API key
+    HF_TOKEN       Optional; used only if API_KEY is unset (local HF Router).
     IMAGE_NAME     Docker image name for the environment
 
 STDOUT FORMAT:
@@ -443,18 +444,18 @@ def load_env():
 load_env()
 
 IMAGE_NAME = os.getenv("IMAGE_NAME")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+# Validators inject API_KEY + API_BASE_URL for LiteLLM; those must take precedence over HF_TOKEN
+# so all chat completions go through the proxy (HF_TOKEN alone hits the public HF router).
+API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+API_BASE_URL = os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "zai-org/GLM-5"
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 
 if not API_KEY:
-    print("\n[ERROR] Missing Hugging Face Token!", file=sys.stderr)
-    print("This script uses the free Hugging Face API router by default (via the OpenAI python package).", file=sys.stderr)
-    print("Please set your HF_TOKEN in the .env file or run `export HF_TOKEN=...`\n", file=sys.stderr)
+    print("\n[ERROR] Missing API key for the LLM endpoint.", file=sys.stderr)
+    print("Set API_KEY (and API_BASE_URL) from the environment, or HF_TOKEN for local HF Router use.\n", file=sys.stderr)
     exit(1)
 
-import os
 from pathlib import Path
 
 BENCHMARK = "redflag_env"
@@ -851,6 +852,7 @@ def main() -> None:
     base_url = ENV_BASE_URL
 
     print(f"Using model: {MODEL_NAME}", file=sys.stderr, flush=True)
+    print(f"Using LLM base_url: {API_BASE_URL}", file=sys.stderr, flush=True)
     print(f"Using env: {base_url}", file=sys.stderr, flush=True)
 
     for task_id in TASKS:
