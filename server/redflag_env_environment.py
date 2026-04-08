@@ -9,54 +9,32 @@ This is the core environment that processes code review actions:
 Implements the OpenEnv Environment interface with reset(), step(), state().
 """
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
-try:
-    from ..models import (
-        RedflagAction,
-        RedflagObservation,
-        RedflagState,
-        ReviewComment,
-        DiffHunk,
-    )
-    from ..env import EpisodeState
-    from ..tasks.registry import (
-        list_task_ids,
-        load_task,
-        load_diff_hunks,
-        load_context_files,
-    )
-    from ..reward import (
-        get_grader,
-        compute_comment_reward,
-        compute_context_request_reward,
-        compute_early_termination_bonus,
-    )
-except ImportError:
-    from models import (
-        RedflagAction,
-        RedflagObservation,
-        RedflagState,
-        ReviewComment,
-        DiffHunk,
-    )
-    from env import EpisodeState
-    from tasks.registry import (
-        list_task_ids,
-        load_task,
-        load_diff_hunks,
-        load_context_files,
-    )
-    from reward import (
-        get_grader,
-        compute_comment_reward,
-        compute_context_request_reward,
-        compute_early_termination_bonus,
-    )
+from models import (
+    RedflagAction,
+    RedflagObservation,
+    RedflagState,
+    ReviewComment,
+    DiffHunk,
+)
+from env import EpisodeState
+from tasks.registry import (
+    list_task_ids,
+    load_task,
+    load_diff_hunks,
+    load_context_files,
+)
+from reward import (
+    get_grader,
+    compute_comment_reward,
+    compute_context_request_reward,
+    compute_early_termination_bonus,
+)
 
 
 class RedflagEnvironment(Environment):
@@ -184,13 +162,9 @@ class RedflagEnvironment(Environment):
         
         return obs, reward, obs.done, info_dict
 
-    def state(self) -> State:
-        """Explicit state() method for OpenEnv interface."""
-        return self._episode_state_property
-
     @property
-    def _episode_state_property(self) -> State:
-        """Internal property for getting the state."""
+    def state(self) -> State:
+        """Get the current environment state."""
         if self._episode is None:
             return RedflagState(episode_id="", step_count=0)
 

@@ -141,9 +141,6 @@ class RedflagReward(BaseModel):
     success: Optional[bool] = Field(None, description="Whether the episode was successful (if terminal)")
 
 
-class RewardBreakdown(RedflagReward):
-    """Legacy compatibility for RewardBreakdown."""
-    pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
