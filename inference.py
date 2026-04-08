@@ -434,27 +434,23 @@ def _load_redflag_env_and_action() -> tuple[Any, Any]:
 
 # ── Configuration ────────────────────────────────────────────────────────
 
-def load_env():
-    if os.path.exists(".env"):
-        with open(".env", "r") as f:
-            for line in f:
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.strip().split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
+def load_env() -> None:
+    """Load optional `.env` without overriding already-set variables (harness injects first)."""
+    if not os.path.exists(".env"):
+        return
+    with open(".env", "r", encoding="utf-8") as f:
+        for line in f:
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.strip().split("=", 1)
+                k = k.strip()
+                os.environ.setdefault(k, v.strip())
+
+
 load_env()
 
 IMAGE_NAME = os.getenv("IMAGE_NAME")
-# Validators inject API_KEY + API_BASE_URL for LiteLLM; those must take precedence over HF_TOKEN
-# so all chat completions go through the proxy (HF_TOKEN alone hits the public HF router).
-API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
-API_BASE_URL = os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "zai-org/GLM-5"
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
-
-if not API_KEY:
-    print("\n[ERROR] Missing API key for the LLM endpoint.", file=sys.stderr)
-    print("Set API_KEY (and API_BASE_URL) from the environment, or HF_TOKEN for local HF Router use.\n", file=sys.stderr)
-    exit(1)
 
 from pathlib import Path
 
@@ -843,16 +839,50 @@ def run_task(client: Any, base_url: str, task_id: str) -> Dict[str, Any]:
     }
 
 
+def _harness_llm_credentials_present() -> bool:
+    """True when LiteLLM proxy vars are both set and non-empty (submission harness)."""
+    b = (os.environ.get("API_BASE_URL") or "").strip()
+    k = (os.environ.get("API_KEY") or "").strip()
+    return bool(b and k)
+
+
 def main() -> None:
     """Run inference on all tasks."""
-    if OpenAI is not None:
-        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    # Submission harness: call the LiteLLM proxy using the injected env vars (see checklist).
+    # Use os.environ["API_BASE_URL"] and os.environ["API_KEY"] literally so metering recognizes them.
+    if _harness_llm_credentials_present():
+        if OpenAI is not None:
+            client = OpenAI(
+                base_url=os.environ["API_BASE_URL"].rstrip("/"),
+                api_key=os.environ["API_KEY"],
+            )
+        else:
+            client = _StdlibOpenAI(
+                base_url=os.environ["API_BASE_URL"].rstrip("/"),
+                api_key=os.environ["API_KEY"],
+            )
+        llm_base_log = os.environ["API_BASE_URL"].rstrip("/")
     else:
-        client = _StdlibOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        # Local / HF Router when no injected proxy pair
+        llm_base_log = (
+            os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
+        ).rstrip("/")
+        llm_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+        if not llm_key:
+            print(
+                "\n[ERROR] Set API_KEY and API_BASE_URL (harness), or HF_TOKEN for local HF Router.\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if OpenAI is not None:
+            client = OpenAI(base_url=llm_base_log, api_key=llm_key)
+        else:
+            client = _StdlibOpenAI(base_url=llm_base_log, api_key=llm_key)
+
     base_url = ENV_BASE_URL
 
     print(f"Using model: {MODEL_NAME}", file=sys.stderr, flush=True)
-    print(f"Using LLM base_url: {API_BASE_URL}", file=sys.stderr, flush=True)
+    print(f"Using LLM base_url: {llm_base_log}", file=sys.stderr, flush=True)
     print(f"Using env: {base_url}", file=sys.stderr, flush=True)
 
     for task_id in TASKS:
