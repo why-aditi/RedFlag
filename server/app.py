@@ -7,25 +7,22 @@ Endpoints:
     - GET /state: Get current environment state
     - GET /health: Health check
     - WS /ws: WebSocket endpoint for persistent sessions
-
-Usage:
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 7860
+    - GET /: Root status endpoint
 """
 
 try:
     from openenv.core.env_server.http_server import create_app
-except Exception as e:  # pragma: no cover
+except Exception as e:
     raise ImportError(
         "openenv is required. Install with 'pip install openenv-core[core]'"
     ) from e
 
 try:
-    from ..models import RedflagAction, RedflagObservation
-    from .redflag_env_environment import RedflagEnvironment
-except (ImportError, ModuleNotFoundError):
     from models import RedflagAction, RedflagObservation
     from server.redflag_env_environment import RedflagEnvironment
-
+except (ImportError, ModuleNotFoundError):
+    from .models import RedflagAction, RedflagObservation
+    from .server.redflag_env_environment import RedflagEnvironment
 
 # Create the app using OpenEnv's create_app factory
 app = create_app(
@@ -47,16 +44,9 @@ def root():
     }
 
 def main(host: str = "0.0.0.0", port: int = 7860):
-    """
-    Entry point for direct execution.
-
-    Usage:
-        uv run --project . server
-        python -m redflag_env.server.app
-    """
+    """Entry point for standalone execution."""
     import uvicorn
     uvicorn.run(app, host=host, port=port)
-
 
 if __name__ == "__main__":
     import argparse
