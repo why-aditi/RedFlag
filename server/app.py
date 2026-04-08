@@ -36,6 +36,15 @@ app = create_app(
     max_concurrent_envs=1,
 )
 
+@app.get("/")
+def root():
+    """Friendly root endpoint for UI/Hugging Face health checks."""
+    return {
+        "status": "Running",
+        "message": "RedFlag RL Code Review Environment is active.",
+        "documentation": "https://huggingface.co/spaces/lostinthesky/redflag-env",
+        "endpoints": ["/reset", "/step", "/state", "/health"]
+    }
 
 def main(host: str = "0.0.0.0", port: int = 7860):
     """
