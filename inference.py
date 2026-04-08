@@ -23,7 +23,79 @@ import sys
 import textwrap
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+import requests
+
+try:
+    from openai import OpenAI  # type: ignore
+except Exception:  # pragma: no cover
+    OpenAI = None  # type: ignore[assignment]
+
+
+class _CompatMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _CompatChoice:
+    def __init__(self, content: str):
+        self.message = _CompatMessage(content)
+
+
+class _CompatCompletion:
+    def __init__(self, content: str):
+        self.choices = [_CompatChoice(content)]
+
+
+class _RequestsChatCompletions:
+    def __init__(self, base_url: str, api_key: str):
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+
+    def create(
+        self,
+        *,
+        model: str,
+        messages: list,
+        temperature: float,
+        max_tokens: int,
+        stream: bool = False,
+        **_kwargs: Any,
+    ) -> _CompatCompletion:
+        if stream:
+            raise ValueError("Streaming not supported in requests fallback client.")
+
+        url = f"{self._base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        content = (
+            (data.get("choices") or [{}])[0].get("message") or {}
+        ).get("content", "")
+        return _CompatCompletion((content or "").strip())
+
+
+class _RequestsChat:
+    def __init__(self, base_url: str, api_key: str):
+        self.completions = _RequestsChatCompletions(base_url, api_key)
+
+
+class _RequestsOpenAI:
+    """Minimal OpenAI-compatible client (chat.completions.create only)."""
+
+    def __init__(self, *, base_url: str, api_key: str):
+        self.chat = _RequestsChat(base_url, api_key)
 
 # ── Configuration ────────────────────────────────────────────────────────
 
@@ -436,7 +508,10 @@ def run_task(client: OpenAI, base_url: str, task_id: str) -> Dict[str, Any]:
 
 def main() -> None:
     """Run inference on all tasks."""
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    if OpenAI is not None:
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    else:
+        client = _RequestsOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     base_url = ENV_BASE_URL
 
     print(f"Using model: {MODEL_NAME}", file=sys.stderr, flush=True)
