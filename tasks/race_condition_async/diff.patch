@@ -1,0 +1,140 @@
+--- a/worker/dispatcher.py
++++ b/worker/dispatcher.py
+@@ -0,0 +1,120 @@
++"""
++Async job dispatcher module.
++
++Refactored from synchronous threading to asyncio-based concurrency.
++Handles job pickup, execution, and retry logic.
++"""
++
++import asyncio
++import logging
++from datetime import datetime, timedelta
++from typing import Optional, List, Dict, Any
++from dataclasses import dataclass, field
++
++logger = logging.getLogger(__name__)
++
++
++@dataclass
++class Job:
++    """Represents a dispatchable job."""
++    id: str
++    payload: Dict[str, Any]
++    status: str = "pending"  # pending, running, completed, failed
++    created_at: datetime = field(default_factory=datetime.utcnow)
++    started_at: Optional[datetime] = None
++    completed_at: Optional[datetime] = None
++    retries: int = 0
++    max_retries: int = 3
++    error: Optional[str] = None
++
++
++class JobQueue:
++    """In-memory job queue with async support."""
++
++    def __init__(self):
++        self._jobs: Dict[str, Job] = {}
++        self._results: Dict[str, Any] = {}
++
++    def add_job(self, job: Job) -> None:
++        self._jobs[job.id] = job
++
++    def get_job(self, job_id: str) -> Optional[Job]:
++        return self._jobs.get(job_id)
++
++    def get_pending_jobs(self) -> List[Job]:
++        return [j for j in self._jobs.values() if j.status == "pending"]
++
++
++class AsyncDispatcher:
++    """Dispatches and processes jobs asynchronously."""
++
++    def __init__(self, queue: JobQueue, max_concurrent: int = 5):
++        self.queue = queue
++        self.max_concurrent = max_concurrent
++        self._semaphore = asyncio.Semaphore(max_concurrent)
++        self._running = False
++
++    async def process_job(self, job: Job) -> Any:
++        """Process a single job.
++        
++        This method picks up pending jobs and executes them.
++        """
++        # BUG: TOCTOU race condition!
++        # Check and set are not atomic — two coroutines can both see
++        # status == "pending" before either sets it to "running"
++        if job.status == "pending":
++            # ... other coroutine can also pass this check ...
++            logger.info(f"Picking up job {job.id}")
++            
++            # Context switch can happen at any await point above
++            # Another coroutine may have already started this job
++            job.status = "running"
++            job.started_at = datetime.utcnow()
++
++            try:
++                async with self._semaphore:
++                    result = await self._execute(job)
++                    job.status = "completed"
++                    job.completed_at = datetime.utcnow()
++                    self.queue._results[job.id] = result
++                    return result
++            except Exception as e:
++                job.error = str(e)
++                job.status = "failed"
++                logger.error(f"Job {job.id} failed: {e}")
++                raise
++        else:
++            logger.debug(f"Job {job.id} already in state: {job.status}")
++            return None
++
++    async def _execute(self, job: Job) -> Any:
++        """Execute the job payload. Override for custom logic."""
++        # Simulate work
++        await asyncio.sleep(0.1)
++        return {"job_id": job.id, "result": "completed"}
++
++    async def dispatch_all(self) -> List[Any]:
++        """Dispatch all pending jobs concurrently."""
++        self._running = True
++        pending = self.queue.get_pending_jobs()
++        
++        if not pending:
++            logger.info("No pending jobs to dispatch")
++            return []
++        
++        # Launch all pending jobs concurrently
++        tasks = [asyncio.create_task(self.process_job(job)) for job in pending]
++        results = await asyncio.gather(*tasks, return_exceptions=True)
++        
++        self._running = False
++        return results
++
++    async def retry_failed(self, max_attempts: int = 3) -> int:
++        """Retry failed jobs with backoff."""
++        retried = 0
++        failed_jobs = [
++            j for j in self.queue._jobs.values()
++            if j.status == "failed" and j.retries < j.max_retries
++        ]
++
++        for job in failed_jobs:
++            job.retries += 1
++            job.status = "pending"
++            job.error = None
++
++            # BUG: asyncio.sleep(0) doesn't actually back off — 
++            # causes CPU spin under repeated failures
++            await asyncio.sleep(0)
++            
++            try:
++                await self.process_job(job)
++                retried += 1
++            except Exception:
++                logger.warning(
++                    f"Retry {job.retries}/{job.max_retries} failed for {job.id}"
++                )
++
++        return retried

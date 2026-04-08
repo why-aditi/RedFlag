@@ -1,0 +1,32 @@
+{
+    "task_id": "django_django_16588",
+    "pr_title": "Fix floatformat filter for 0 values",
+    "pr_description": "Patches a vulnerability in the floatformat filter to handle 0 values correctly.",
+    "grader_type": "keyword",
+    "line_tolerance": 5,
+    "golden_issues": [
+        {
+            "issue_type": "bug",
+            "severity": "major",
+            "file": "django/template/defaultfilters.py",
+            "line": 185,
+            "keywords": [
+                "floatformat",
+                "0 values",
+                "zero values",
+                "precision",
+                "decimal",
+                "filter",
+                "rounding",
+                "prec",
+                "getcontext",
+                "Decimal"
+            ],
+            "fix_keywords": [
+                "max",
+                "prec",
+                "getcontext"
+            ]
+        }
+    ]
+}

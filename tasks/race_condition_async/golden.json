@@ -1,0 +1,33 @@
+{
+    "task_id": "race_condition_async",
+    "pr_title": "Refactor job dispatcher to async",
+    "pr_description": "This PR refactors the job dispatcher from synchronous threading to asyncio-based concurrency. Adds an AsyncDispatcher class that processes jobs concurrently using asyncio tasks, with semaphore-based concurrency limiting and retry logic for failed jobs.",
+    "grader_type": "semantic",
+    "line_tolerance": 5,
+    "max_steps": 8,
+    "context_slots": 3,
+    "golden_issues": [
+        {
+            "issue_type": "bug",
+            "severity": "critical",
+            "file": "worker/dispatcher.py",
+            "line_range": [47, 76],
+            "keywords": ["race condition", "TOCTOU", "concurrent", "atomicity", "lock", "two coroutines", "double dispatch", "check-then-act", "time of check", "not atomic", "data race"],
+            "fix_keywords": ["asyncio.Lock", "async with lock", "atomic", "compare_and_swap", "mutex", "synchronize", "race condition", "toctou", "time of check"]
+        },
+        {
+            "issue_type": "bug",
+            "severity": "major",
+            "file": "worker/dispatcher.py",
+            "line": 115,
+            "keywords": ["busy wait", "spin", "CPU", "sleep(0)", "backoff", "exponential", "no delay", "tight loop", "yield"],
+            "fix_keywords": ["asyncio.sleep(1)", "exponential backoff", "jitter", "sleep(2 ** retries)", "increasing delay"]
+        }
+    ],
+    "semantic_weights": {
+        "race_condition_identified": 0.40,
+        "correct_lines_cited": 0.30,
+        "lock_fix_suggested": 0.20,
+        "busy_wait_identified": 0.10
+    }
+}

@@ -1,0 +1,27 @@
+{
+    "task_id": "null_deref_basic",
+    "pr_title": "Add user stats aggregation endpoint",
+    "pr_description": "This PR adds a new POST endpoint `/users/stats` that accepts a list of user IDs and returns aggregated statistics including scores and activity data. Also adds a simple GET endpoint for individual user lookup.",
+    "grader_type": "keyword",
+    "line_tolerance": 3,
+    "max_steps": 8,
+    "context_slots": 3,
+    "golden_issues": [
+        {
+            "issue_type": "bug",
+            "severity": "critical",
+            "file": "api/stats.py",
+            "line": 23,
+            "keywords": ["empty list", "IndexError", "index out of range", "guard", "check", "empty", "no users", "length"],
+            "fix_keywords": ["if not users", "len(users) == 0", "return early", "check empty", "guard clause"]
+        },
+        {
+            "issue_type": "bug",
+            "severity": "major",
+            "file": "api/stats.py",
+            "line": 31,
+            "keywords": ["off-by-one", "range", "last element", "skipped", "len - 1", "last user", "minus 1", "fence post"],
+            "fix_keywords": ["range(len(users))", "for user in users", "remove - 1", "iterate all"]
+        }
+    ]
+}

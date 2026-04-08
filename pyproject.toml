@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-redflag-env"
+version = "1.0.0"
+description = "RedFlag — Code Review RL Environment for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core[core]>=0.2.2",
+    "fastapi>=0.115.0",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.24.0",
+    "requests>=2.31.0",
+    "openai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+server = "redflag_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = [
+    "redflag_env",
+    "redflag_env.server",
+    "redflag_env.env",
+    "redflag_env.tasks",
+    "redflag_env.graders",
+]
+package-dir = {"redflag_env" = ".", "redflag_env.server" = "server", "redflag_env.env" = "env", "redflag_env.tasks" = "tasks", "redflag_env.graders" = "graders"}

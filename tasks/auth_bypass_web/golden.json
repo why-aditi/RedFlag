@@ -1,0 +1,27 @@
+{
+    "task_id": "auth_bypass_web",
+    "pr_title": "Add admin panel routes",
+    "pr_description": "This PR adds a new admin blueprint with routes for listing users, searching users by name, and deleting users. Includes admin privilege checking via a require_admin decorator and audit logging for destructive actions.",
+    "grader_type": "keyword",
+    "line_tolerance": 5,
+    "max_steps": 8,
+    "context_slots": 3,
+    "golden_issues": [
+        {
+            "issue_type": "security",
+            "severity": "critical",
+            "file": "app/admin/routes.py",
+            "line": 23,
+            "keywords": ["authentication", "authorization", "login_required", "unauthenticated", "access control", "no auth", "missing decorator", "unprotected"],
+            "fix_keywords": ["@login_required", "check_auth", "require_admin", "add decorator", "add authentication"]
+        },
+        {
+            "issue_type": "security",
+            "severity": "critical",
+            "file": "app/admin/routes.py",
+            "line": 60,
+            "keywords": ["SQL injection", "f-string", "parameterized", "user input", "sanitize", "string interpolation", "unsanitized", "injection"],
+            "fix_keywords": ["execute(query, (name,))", "?", "%s", "parameterized query", "ORM", "db.session.query", "sqlalchemy", "prepared statement"]
+        }
+    ]
+}
