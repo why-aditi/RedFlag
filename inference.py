@@ -23,7 +23,8 @@ import sys
 import textwrap
 from typing import Any, Dict, List, Optional
 
-import requests
+import urllib.error
+import urllib.request
 
 try:
     from openai import OpenAI  # type: ignore
@@ -46,7 +47,7 @@ class _CompatCompletion:
         self.choices = [_CompatChoice(content)]
 
 
-class _RequestsChatCompletions:
+class _StdlibChatCompletions:
     def __init__(self, base_url: str, api_key: str):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -62,13 +63,9 @@ class _RequestsChatCompletions:
         **_kwargs: Any,
     ) -> _CompatCompletion:
         if stream:
-            raise ValueError("Streaming not supported in requests fallback client.")
+            raise ValueError("Streaming not supported in stdlib fallback client.")
 
         url = f"{self._base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
         payload = {
             "model": model,
             "messages": messages,
@@ -76,9 +73,28 @@ class _RequestsChatCompletions:
             "max_tokens": max_tokens,
             "stream": False,
         }
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
+        req = urllib.request.Request(
+            url=url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = "<unreadable response body>"
+            raise RuntimeError(f"HTTP {e.code} from LLM endpoint: {body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to call LLM endpoint: {e}") from e
+
+        data = json.loads(raw.decode("utf-8", errors="replace"))
 
         content = (
             (data.get("choices") or [{}])[0].get("message") or {}
@@ -86,16 +102,16 @@ class _RequestsChatCompletions:
         return _CompatCompletion((content or "").strip())
 
 
-class _RequestsChat:
+class _StdlibChat:
     def __init__(self, base_url: str, api_key: str):
-        self.completions = _RequestsChatCompletions(base_url, api_key)
+        self.completions = _StdlibChatCompletions(base_url, api_key)
 
 
-class _RequestsOpenAI:
+class _StdlibOpenAI:
     """Minimal OpenAI-compatible client (chat.completions.create only)."""
 
     def __init__(self, *, base_url: str, api_key: str):
-        self.chat = _RequestsChat(base_url, api_key)
+        self.chat = _StdlibChat(base_url, api_key)
 
 # ── Configuration ────────────────────────────────────────────────────────
 
@@ -511,7 +527,7 @@ def main() -> None:
     if OpenAI is not None:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     else:
-        client = _RequestsOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        client = _StdlibOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     base_url = ENV_BASE_URL
 
     print(f"Using model: {MODEL_NAME}", file=sys.stderr, flush=True)
