@@ -16,12 +16,16 @@ STDOUT FORMAT:
     [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...>
 """
 
-import asyncio
+import base64
 import json
 import os
+import socket
+import ssl
+import struct
 import sys
 import textwrap
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import urllib.error
 import urllib.request
@@ -112,6 +116,320 @@ class _StdlibOpenAI:
 
     def __init__(self, *, base_url: str, api_key: str):
         self.chat = _StdlibChat(base_url, api_key)
+
+
+# ── OpenEnv-free WebSocket env client (stdlib only) ───────────────────────
+# Validators often run inference.py with only the stdlib. The repo's client.py
+# and models.py import openenv/pydantic; this block avoids those imports.
+
+
+def _convert_http_to_ws_url(url: str) -> str:
+    ws_url = url.rstrip("/")
+    if ws_url.startswith("http://"):
+        ws_url = "ws://" + ws_url[7:]
+    elif ws_url.startswith("https://"):
+        ws_url = "wss://" + ws_url[8:]
+    elif not ws_url.startswith(("ws://", "wss://")):
+        ws_url = "ws://" + ws_url
+    return ws_url
+
+
+class _StdlibWebSocket:
+    """Minimal RFC6455 client (text + close + ping) for OpenEnv /ws."""
+
+    def __init__(
+        self,
+        http_base_url: str,
+        connect_timeout_s: float = 10.0,
+        message_timeout_s: float = 60.0,
+    ) -> None:
+        self._http_base_url = http_base_url
+        self._connect_timeout_s = connect_timeout_s
+        self._message_timeout_s = message_timeout_s
+        self._sock: Optional[socket.socket] = None
+        self._pending = bytearray()
+
+    def _read_exact(self, n: int) -> bytes:
+        assert self._sock is not None
+        while len(self._pending) < n:
+            chunk = self._sock.recv(65536)
+            if not chunk:
+                raise ConnectionError("WebSocket connection closed unexpectedly")
+            self._pending.extend(chunk)
+        out = bytes(self._pending[:n])
+        del self._pending[:n]
+        return out
+
+    def _recv_frame(self) -> tuple[bool, int, bytes]:
+        b0, b1 = struct.unpack("!BB", self._read_exact(2))
+        fin = bool((b0 >> 7) & 1)
+        opcode = b0 & 0x0F
+        masked = (b1 >> 7) & 1
+        length = b1 & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", self._read_exact(2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", self._read_exact(8))[0]
+        if masked:
+            mask = self._read_exact(4)
+            payload = self._read_exact(length)
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        else:
+            payload = self._read_exact(length)
+        return fin, opcode, payload
+
+    def _send_frame(self, opcode: int, data: bytes) -> None:
+        assert self._sock is not None
+        header = bytearray()
+        b0 = 0x80 | (opcode & 0x0F)
+        length = len(data)
+        mask_bit = 0x80
+        if length < 126:
+            header.append(b0)
+            header.append(mask_bit | length)
+        elif length < 65536:
+            header.append(b0)
+            header.append(mask_bit | 126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(b0)
+            header.append(mask_bit | 127)
+            header.extend(struct.pack("!Q", length))
+        mask = os.urandom(4)
+        header.extend(mask)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        self._sock.sendall(bytes(header) + masked)
+
+    def connect(self) -> None:
+        ws_url = _convert_http_to_ws_url(self._http_base_url).rstrip("/") + "/ws"
+        pseudo = ws_url.replace("ws://", "http://", 1).replace("wss://", "https://", 1)
+        pr = urlparse(pseudo)
+        host = pr.hostname or "localhost"
+        path = pr.path or "/"
+        port = pr.port
+        use_tls = pr.scheme == "https"
+        if port is None:
+            port = 443 if use_tls else 80
+
+        raw_sock = socket.create_connection((host, port), timeout=self._connect_timeout_s)
+        if use_tls:
+            ctx = ssl.create_default_context()
+            raw_sock = ctx.wrap_socket(raw_sock, server_hostname=host)
+
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        req = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"\r\n"
+        ).encode("ascii")
+        raw_sock.sendall(req)
+
+        self._pending.clear()
+        self._sock = raw_sock
+        self._sock.settimeout(self._message_timeout_s)
+        while b"\r\n\r\n" not in self._pending:
+            chunk = self._sock.recv(65536)
+            if not chunk:
+                raise ConnectionError("WebSocket handshake failed (EOF)")
+            self._pending.extend(chunk)
+            if len(self._pending) > 65536:
+                raise ConnectionError("WebSocket handshake failed (headers too large)")
+        idx = self._pending.index(b"\r\n\r\n")
+        status_line = self._pending[: self._pending.index(b"\r\n")].decode(
+            "latin-1", errors="replace"
+        )
+        if " 101 " not in status_line:
+            raise ConnectionError(f"WebSocket handshake failed: {status_line!r}")
+        del self._pending[: idx + 4]
+
+    def recv_text(self) -> str:
+        assert self._sock is not None
+        out = bytearray()
+        expect_first = True
+        while True:
+            fin, opcode, payload = self._recv_frame()
+            if opcode == 8:
+                raise ConnectionError("WebSocket closed by server")
+            if opcode == 9:
+                self._send_frame(0x0A, payload)
+                continue
+            if opcode == 0x0A:
+                continue
+            if expect_first:
+                if opcode not in (1, 2):
+                    raise RuntimeError(f"Expected data frame, got opcode {opcode}")
+                out.extend(payload)
+                if fin:
+                    return out.decode("utf-8")
+                expect_first = False
+            else:
+                if opcode != 0:
+                    raise RuntimeError(f"Expected continuation frame, got {opcode}")
+                out.extend(payload)
+                if fin:
+                    return out.decode("utf-8")
+
+    def send_json(self, obj: Dict[str, Any]) -> None:
+        self._send_frame(0x1, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+
+    def recv_json(self) -> Dict[str, Any]:
+        return json.loads(self.recv_text())
+
+    def close(self) -> None:
+        if self._sock is not None:
+            try:
+                self._send_frame(0x8, b"")
+            except Exception:
+                pass
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
+
+class _SimpleObservation:
+    def __init__(self, data: Dict[str, Any]) -> None:
+        self._data = data
+
+    def model_dump(self) -> Dict[str, Any]:
+        return dict(self._data)
+
+
+class _SimpleStepResult:
+    def __init__(self, payload: Dict[str, Any]) -> None:
+        obs_inner = payload.get("observation") or {}
+        merged: Dict[str, Any] = dict(obs_inner) if isinstance(obs_inner, dict) else {}
+        merged["reward"] = payload.get("reward")
+        merged["done"] = payload.get("done", False)
+        self.observation = _SimpleObservation(merged)
+        self.reward = payload.get("reward")
+        self.done = bool(payload.get("done", False))
+
+
+def _parse_ws_message(msg: Dict[str, Any]) -> _SimpleStepResult:
+    if msg.get("type") == "error":
+        err = msg.get("data") or {}
+        raise RuntimeError(
+            f"Server error: {err.get('message', 'Unknown error')} "
+            f"(code: {err.get('code', 'UNKNOWN')})"
+        )
+    if msg.get("type") != "observation":
+        raise RuntimeError(f"Unexpected WebSocket message: {msg!r}")
+    return _SimpleStepResult(msg.get("data") or {})
+
+
+def _step_payload_from_action(action: Any) -> Dict[str, Any]:
+    if hasattr(action, "model_dump"):
+        raw: Dict[str, Any] = action.model_dump(exclude_none=True)
+    else:
+        raw = {
+            "action_type": getattr(action, "action_type", "request_changes"),
+        }
+        if getattr(action, "comment", None) is not None:
+            c = action.comment
+            raw["comment"] = c.model_dump() if hasattr(c, "model_dump") else c
+        if getattr(action, "context_request", None) is not None:
+            cr = action.context_request
+            raw["context_request"] = (
+                cr.model_dump() if hasattr(cr, "model_dump") else cr
+            )
+        if getattr(action, "reasoning", None) is not None:
+            raw["reasoning"] = action.reasoning
+
+    payload: Dict[str, Any] = {"action_type": raw["action_type"]}
+    if raw.get("comment") is not None:
+        payload["comment"] = raw["comment"]
+    if raw.get("context_request") is not None:
+        payload["context_request"] = raw["context_request"]
+    if raw.get("reasoning") is not None:
+        payload["reasoning"] = raw["reasoning"]
+    return payload
+
+
+class _SimpleAction:
+    """Stand-in when models.RedflagAction (pydantic) is unavailable."""
+
+    def __init__(self, d: Dict[str, Any]) -> None:
+        self.action_type = d.get("action_type", "request_changes")
+        self.comment = d.get("comment")
+        self.context_request = d.get("context_request")
+        self.reasoning = d.get("reasoning")
+
+
+class _FallbackSyncRedflagEnv:
+    def __init__(self, parent: "_FallbackRedflagEnv") -> None:
+        self._parent = parent
+        self._ws: Optional[_StdlibWebSocket] = None
+
+    def __enter__(self) -> "_FallbackSyncRedflagEnv":
+        self._ws = _StdlibWebSocket(
+            self._parent._base_url,
+            connect_timeout_s=self._parent._connect_timeout_s,
+            message_timeout_s=self._parent._message_timeout_s,
+        )
+        self._ws.connect()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        if self._ws is not None:
+            try:
+                self._ws.send_json({"type": "close"})
+            except Exception:
+                pass
+            self._ws.close()
+            self._ws = None
+
+    def reset(self, **kwargs: Any) -> _SimpleStepResult:
+        assert self._ws is not None
+        self._ws.send_json({"type": "reset", "data": kwargs})
+        return _parse_ws_message(self._ws.recv_json())
+
+    def step(self, action: Any) -> _SimpleStepResult:
+        assert self._ws is not None
+        self._ws.send_json({"type": "step", "data": _step_payload_from_action(action)})
+        return _parse_ws_message(self._ws.recv_json())
+
+
+class _FallbackRedflagEnv:
+    """Drop-in for client.RedflagEnv when openenv is not installed."""
+
+    def __init__(
+        self,
+        base_url: str,
+        connect_timeout_s: float = 10.0,
+        message_timeout_s: float = 60.0,
+        **_kwargs: Any,
+    ) -> None:
+        self._base_url = base_url
+        self._connect_timeout_s = connect_timeout_s
+        self._message_timeout_s = message_timeout_s
+
+    def sync(self) -> _FallbackSyncRedflagEnv:
+        return _FallbackSyncRedflagEnv(self)
+
+
+_ENV_ACTION_CLASSES: Optional[tuple[Any, Any]] = None
+
+
+def _load_redflag_env_and_action() -> tuple[Any, Any]:
+    """Prefer repo client/models; fall back to stdlib WebSocket if imports fail."""
+    global _ENV_ACTION_CLASSES
+    if _ENV_ACTION_CLASSES is not None:
+        return _ENV_ACTION_CLASSES
+    try:
+        from client import RedflagEnv as _RE  # type: ignore
+        from models import RedflagAction as _RA  # type: ignore
+
+        _ENV_ACTION_CLASSES = (_RE, _RA)
+    except ImportError:
+        _ENV_ACTION_CLASSES = (_FallbackRedflagEnv, None)
+    return _ENV_ACTION_CLASSES
+
 
 # ── Configuration ────────────────────────────────────────────────────────
 
@@ -226,8 +544,6 @@ Respond with EXACTLY ONE JSON object:
 """).strip()
 
 
-import sys
-
 # ── Logging ──────────────────────────────────────────────────────────────
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -259,7 +575,7 @@ def log_end(
 
 # ── LLM Interface ───────────────────────────────────────────────────────
 
-def call_llm_with_fallback(client: OpenAI, messages: list, temperature: float, max_tokens: int) -> str:
+def call_llm_with_fallback(client: Any, messages: list, temperature: float, max_tokens: int) -> str:
     """Invokes LLM and automatically falls back to secondary models if Pro tier quota is depleted."""
     models = [
         MODEL_NAME,
@@ -346,7 +662,7 @@ Identify the next issue in this diff, request context, or if you've found all is
 
 
 def get_model_action(
-    client: OpenAI,
+    client: Any,
     observation: Dict[str, Any],
     history: List[Dict],
     last_reward: float = 0.0,
@@ -397,7 +713,7 @@ def get_model_action(
         return {"action_type": "request_changes"}, str(exc), user_prompt
 
 
-def get_critic_approval(client: OpenAI, user_prompt: str, proposed_action: str) -> tuple[bool, str]:
+def get_critic_approval(client: Any, user_prompt: str, proposed_action: str) -> tuple[bool, str]:
     """Ask the critic model to verify the proposed action."""
     content = user_prompt + "\n\n--- JUNIOR PROPOSED ACTION ---\n" + proposed_action
     try:
@@ -422,11 +738,9 @@ def get_critic_approval(client: OpenAI, user_prompt: str, proposed_action: str) 
 
 # ── Environment Interaction ───────────────────────────────────────────────
 
-from client import RedflagEnv
-from models import RedflagAction
-
-def run_task(client: OpenAI, base_url: str, task_id: str) -> Dict[str, Any]:
+def run_task(client: Any, base_url: str, task_id: str) -> Dict[str, Any]:
     """Run a single task episode and return results."""
+    RedflagEnv, RedflagAction = _load_redflag_env_and_action()
     rewards: List[float] = []
     steps_taken = 0
     history: List[Dict] = []
@@ -468,12 +782,18 @@ def run_task(client: OpenAI, base_url: str, task_id: str) -> Dict[str, Any]:
 
                 history.append({"prompt": prompt, "response": raw_response})
 
-                # Convert dict to Pydantic model
+                # Convert dict to action model (pydantic) or stdlib stand-in
                 try:
-                    action_obj = RedflagAction.model_validate(action_dict)
+                    if RedflagAction is not None:
+                        action_obj = RedflagAction.model_validate(action_dict)
+                    else:
+                        action_obj = _SimpleAction(action_dict)
                 except Exception as e:
                     print(f"[DEBUG] Validation error: {e}", file=sys.stderr)
-                    action_obj = RedflagAction(action_type="request_changes")
+                    if RedflagAction is not None:
+                        action_obj = RedflagAction(action_type="request_changes")
+                    else:
+                        action_obj = _SimpleAction({"action_type": "request_changes"})
                     action_dict = {"action_type": "request_changes"}
 
                 # Send action to environment
