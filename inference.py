@@ -841,6 +841,7 @@ def main() -> None:
         )
 
     base_url = ENV_BASE_URL
+    llm_base_log = os.environ.get("API_BASE_URL", "None")
 
     print(f"Using model: {MODEL_NAME}", file=sys.stderr, flush=True)
     print(f"Using LLM base_url: {llm_base_log}", file=sys.stderr, flush=True)
