@@ -113,6 +113,6 @@ The table below documents the baseline performance running the `zai-org/GLM-5` z
 | `zai-org/GLM-5` | `auth_bypass_web` | **1.000** | `[PASS]` |
 | `zai-org/GLM-5` | `null_deref_basic` | **0.765** | `[PASS]` |
 | `zai-org/GLM-5` | `race_condition_async` | **0.647** | `[PASS]` |
-| `zai-org/GLM-5` | `django_django_16588` | **0.529** | `[PASS]*` |
+| `zai-org/GLM-5` | `django_django_16588` | **0.529** | `[PASS]` |
 
 
