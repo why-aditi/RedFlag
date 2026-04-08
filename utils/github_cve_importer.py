@@ -20,9 +20,10 @@ if os.path.exists(".env"):
                 k, v = line.strip().split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
 
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+# Use API variables injected by the environment; strictly no hardcoded providers.
+API_KEY = os.environ.get("API_KEY")
+API_BASE_URL = os.environ.get("API_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME") or "zai-org/GLM-5"
 
 PROMPT_TEMPLATE = """
 You are an expert security engineer creating a benchmark task for an AI Code Review Environment.
